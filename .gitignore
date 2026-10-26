@@ -1,0 +1,11 @@
+*.key
+*.p12
+*.pem
+*.pfx
+*.sig
+.DS_Store
+.env
+.env.*
+/bin/
+/dist/
+node_modules/

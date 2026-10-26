@@ -1,0 +1,16 @@
+#!/bin/sh
+# Fill the formula template from a VERIFIED SHA256SUMS. Local helper; publishes nothing.
+#   packaging/homebrew/update-formula.sh <version> <path/to/SHA256SUMS> > Formula/pewter.rb
+# Refuses to run unless the signature has been verified by you first (pass --i-verified-the-signature).
+set -eu
+V="${1:?version}"; SUMS="${2:?SHA256SUMS path}"; FLAG="${3:-}"
+[ "$FLAG" = "--i-verified-the-signature" ] || { echo "verify SHA256SUMS.sig first, then pass --i-verified-the-signature" >&2; exit 1; }
+here="$(cd "$(dirname "$0")" && pwd)"
+h() { awk -v f="pewter-v$V-$1.tar.gz" '$2==f{print $1}' "$SUMS"; }
+out="$(cat "$here/pewter.rb")"
+for p in darwin-arm64 darwin-amd64 linux-arm64 linux-amd64; do
+  s="$(h "$p")"; [ -n "$s" ] || { echo "missing $p in SHA256SUMS" >&2; exit 1; }
+  key="$(echo "$p" | tr 'a-z-' 'A-Z_')"
+  out="$(printf '%s\n' "$out" | sed "s/REPLACE_WITH_REAL_SHA256_$key\" # PLACEHOLDER/$s\"/")"
+done
+printf '%s\n' "$out" | sed "s/version \"0.0.0\" # REPLACE at release/version \"$V\"/"
