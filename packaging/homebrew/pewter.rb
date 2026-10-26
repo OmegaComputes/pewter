@@ -1,7 +1,7 @@
 # TEMPLATE. Do not copy into a tap until a signed release exists.
 #
-# Goes in a tap repository named homebrew-tap, as Formula/pewter.rb, so users run:
-#   brew install <owner>/tap/pewter
+# Goes in the tap repository OmegaComputes/homebrew-tap, as Formula/pewter.rb, so users run:
+#   brew install omegacomputes/tap/pewter
 #
 # Release checklist (done by packaging/homebrew/update-formula.sh on a real release):
 #   1. set `version`
@@ -43,6 +43,7 @@ class Pewter < Formula
 
   def install
     bin.install "pewter"
+    doc.install "LICENSE", "NOTICE"
     bin.install_symlink "pewter" => "pew"
     generate_completions_from_executable(bin/"pewter", "completion", shells: [:bash, :zsh])
   end

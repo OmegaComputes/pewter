@@ -77,22 +77,38 @@ mut() { # name expected-message mutate-cmd...
 }
 A="pewter-v$V-$HOSTOS-$HA.tar.gz"
 mut tampered-archive "checksum mismatch" sh -c "printf x >> $A"
-mut tampered-sums "signature check failed" sh -c "sed -i 's/^./0/' SHA256SUMS"
+mut tampered-sums "signature check failed" sh -c "sed -i '1s/^0/1/;1t;1s/^./0/' SHA256SUMS"
 mut missing-sig "SHA256SUMS.sig" rm -f SHA256SUMS.sig
 mut wrong-key "signature check failed" sh -c "openssl pkeyutl -sign -rawin -inkey $W/other.key -in SHA256SUMS -out SHA256SUMS.sig"
 mut archive-unlisted "not listed exactly once" sh -c "echo '0000 other.tar.gz' > SHA256SUMS && openssl pkeyutl -sign -rawin -inkey $W/test.key -in SHA256SUMS -out SHA256SUMS.sig"
-# correctly signed but hostile archive (extra file + traversal name): signature and checksum pass, content check must stop it
-mut evil-archive "unexpected archive contents" sh -c "mkdir e && echo hi > e/pewter && echo x > e/extra && tar -C e -czf $A pewter extra && sha256sum pewter-v$V-*.tar.gz > SHA256SUMS && openssl pkeyutl -sign -rawin -inkey $W/test.key -in SHA256SUMS -out SHA256SUMS.sig"
+# correctly signed but hostile archives: signature and checksum pass, the content check must stop them
+resign="sha256sum pewter-v$V-*.tar.gz > SHA256SUMS && openssl pkeyutl -sign -rawin -inkey $W/test.key -in SHA256SUMS -out SHA256SUMS.sig"
+mut evil-archive "unexpected archive contents" sh -c "mkdir e && echo hi > e/pewter && echo l > e/LICENSE && echo n > e/NOTICE && echo x > e/extra && tar -C e -czf $A LICENSE NOTICE pewter extra && $resign"
+mut no-license "unexpected archive contents" sh -c "mkdir e && echo hi > e/pewter && echo n > e/NOTICE && tar -C e -czf $A NOTICE pewter && $resign"
+mut no-notice "unexpected archive contents" sh -c "mkdir e && echo hi > e/pewter && echo l > e/LICENSE && tar -C e -czf $A LICENSE pewter && $resign"
+mut binary-only "unexpected archive contents" sh -c "mkdir e && echo hi > e/pewter && tar -C e -czf $A pewter && $resign"
+mut symlink-notice "is not a regular file" sh -c "mkdir e && echo hi > e/pewter && echo l > e/LICENSE && ln -s /etc/passwd e/NOTICE && tar -C e -czf $A LICENSE NOTICE pewter && $resign"
+
+# the real release archive holds exactly LICENSE, NOTICE and pewter, and the two text files match the repo
+al="$(tar -tzf "$W/good/$A" | LC_ALL=C sort | tr '\n' ' ')"
+mkdir "$W/xa" && tar -xzf "$W/good/$A" -C "$W/xa"
+if [ "$al" = "LICENSE NOTICE pewter " ] && cmp -s "$W/xa/LICENSE" "$ROOT/LICENSE" && cmp -s "$W/xa/NOTICE" "$ROOT/NOTICE"; then ok "release archive = LICENSE + NOTICE + pewter (texts match repo)"; else bad "archive contents: $al"; fi
 
 # latest.txt rollback / tamper
 cp -r "$W/good" "$W/m-latest"; echo "0.0.1" > "$W/m-latest/latest.txt"
 p=$((PORT + 9500)); serve "$W/m-latest" "$p"; for _ in $(seq 1 50); do curl -fsS "http://127.0.0.1:$p/latest.txt" >/dev/null 2>&1 && break; sleep 0.1; done
 if inst latest "http://127.0.0.1:$p" ; then bad "tampered latest.txt accepted"; elif nothing latest && grep -q "signature check failed" "$W/out-latest"; then ok "tampered latest.txt -> refused"; else bad "latest: $(tail -1 "$W/out-latest")"; fi
 
-# placeholder key, no override: refuse
-rm -rf "$W/inst-ph"
-PEWTER_BASE_URL="$base" sh "$ROOT/scripts/install.sh" --dir "$W/inst-ph" >"$W/out-ph" 2>&1
-if [ $? -ne 0 ] && [ ! -e "$W/inst-ph/pewter" ] && grep -q "no release key is configured" "$W/out-ph"; then ok "placeholder key -> refuses to install"; else bad "placeholder key: $(cat "$W/out-ph")"; fi
+# embedded release key: while it is the placeholder the installer must refuse; once a real key is
+# pasted in, it must be a valid Ed25519 public key (and the placeholder refusal no longer applies)
+embedded="$(sed -n "/^RELEASE_PUBKEY='/,/^-----END PUBLIC KEY-----'/p" "$ROOT/scripts/install.sh" | sed "1s/^RELEASE_PUBKEY='//; \$s/'\$//")"
+if printf '%s' "$embedded" | grep -q PLACEHOLDER; then
+  rm -rf "$W/inst-ph"
+  PEWTER_BASE_URL="$base" sh "$ROOT/scripts/install.sh" --dir "$W/inst-ph" >"$W/out-ph" 2>&1
+  if [ $? -ne 0 ] && [ ! -e "$W/inst-ph/pewter" ] && grep -q "no release key is configured" "$W/out-ph"; then ok "placeholder key -> refuses to install"; else bad "placeholder key: $(cat "$W/out-ph")"; fi
+else
+  if printf '%s\n' "$embedded" | openssl pkey -pubin -noout 2>/dev/null && printf '%s\n' "$embedded" | openssl pkey -pubin -text -noout 2>/dev/null | grep -qi ed25519; then ok "embedded release key is a valid Ed25519 public key"; else bad "embedded release key is not a valid Ed25519 public key"; fi
+fi
 
 # non-loopback http, and weird schemes
 for u in "http://example.com/cli" "ftp://x/y" "file:///tmp"; do

@@ -108,7 +108,8 @@ pewter --help
 ## Verify a release by hand
 
 Each release publishes `pewter-vX.Y.Z-<os>-<arch>.tar.gz`, `SHA256SUMS` and `SHA256SUMS.sig`
-(a raw Ed25519 signature) under `https://omegacompute.com/cli/`. The release public key is published at
+(a raw Ed25519 signature) under `https://omegacompute.com/cli/`. Each archive holds exactly three files:
+`pewter`, `LICENSE` and `NOTICE`. The installer refuses an archive with anything else in it. The release public key is published at
 omegacompute.com and is also embedded in `scripts/install.sh`.
 
 ```sh
@@ -117,7 +118,7 @@ sha256sum -c --ignore-missing SHA256SUMS      # on macOS: shasum -a 256 -c --ign
 ```
 
 OpenSSL 3 is needed for Ed25519 with `-rawin`. macOS ships an older LibreSSL; install OpenSSL with Homebrew
-or use `brew install` for the CLI.
+(`brew install openssl`) or install the CLI with `brew install omegacomputes/tap/pewter`.
 
 ## Development
 

@@ -29,9 +29,14 @@ for t in $TARGETS; do
   ( cd "$ROOT" && CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath \
       -ldflags "-s -w -X github.com/OmegaComputes/pewter/internal/version.Version=$VERSION -X github.com/OmegaComputes/pewter/internal/version.Commit=$COMMIT -X github.com/OmegaComputes/pewter/internal/version.Date=$DATE" \
       -o "$d/pewter" ./cmd/pewter )
+  # Apache-2.0 asks that redistributed binaries carry the license and NOTICE.
+  [ -f "$ROOT/LICENSE" ] && [ -f "$ROOT/NOTICE" ] || { echo "LICENSE and NOTICE must exist in $ROOT" >&2; exit 1; }
+  cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$d/"
+  chmod 0644 "$d/LICENSE" "$d/NOTICE"
   name="pewter-v$VERSION-$os-$arch.tar.gz"
-  # Fixed ordering, owner and mtime so the archive bytes depend only on the binary.
-  tar -C "$d" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - pewter | gzip -n > "$OUT/$name"
+  # Archive = LICENSE, NOTICE, pewter (exactly these three, in this order).
+  # Fixed ordering, owner and mtime so the archive bytes depend only on the inputs.
+  LC_ALL=C tar -C "$d" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - LICENSE NOTICE pewter | gzip -n > "$OUT/$name"
   echo "built $name"
 done
 

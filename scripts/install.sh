@@ -83,7 +83,7 @@ fi
 
 # --- signature tool check: OpenSSL must support raw Ed25519 verification ---
 openssl pkeyutl -help 2>&1 | grep -q rawin ||
-  err "this openssl cannot verify Ed25519 signatures (macOS system LibreSSL is too old). Install with 'brew install pewter' (once published) or 'brew install openssl' and put it first on PATH."
+  err "this openssl cannot verify Ed25519 signatures (macOS system LibreSSL is too old). Install with 'brew install omegacomputes/tap/pewter' (once published) or 'brew install openssl' and put it first on PATH."
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -147,12 +147,15 @@ WANT="$(awk -v f="$ARCHIVE" '$2 == f || $2 == "*" f {print $1; n++} END {if (n !
 GOT="$(sha256 "$TMP/$ARCHIVE")"
 [ "$WANT" = "$GOT" ] || err "checksum mismatch for $ARCHIVE. Nothing was installed."
 
-# --- archive must hold exactly one file, named pewter ---
-LIST="$(tar -tzf "$TMP/$ARCHIVE")" || err "cannot read archive"
-[ "$LIST" = "$BINARY" ] || err "unexpected archive contents. Nothing was installed."
+# --- archive must hold exactly three files: LICENSE, NOTICE and pewter ---
+LIST="$(tar -tzf "$TMP/$ARCHIVE" | LC_ALL=C sort)" || err "cannot read archive"
+EXPECTED="$(printf 'LICENSE\nNOTICE\n%s' "$BINARY")"
+[ "$LIST" = "$EXPECTED" ] || err "unexpected archive contents. Nothing was installed."
 mkdir "$TMP/x"
-tar -xzf "$TMP/$ARCHIVE" -C "$TMP/x" "$BINARY"
-[ -f "$TMP/x/$BINARY" ] && [ ! -L "$TMP/x/$BINARY" ] || err "archive entry is not a regular file"
+tar -xzf "$TMP/$ARCHIVE" -C "$TMP/x" LICENSE NOTICE "$BINARY"
+for f in LICENSE NOTICE "$BINARY"; do
+  [ -f "$TMP/x/$f" ] && [ ! -L "$TMP/x/$f" ] || err "archive entry $f is not a regular file. Nothing was installed."
+done
 chmod 0755 "$TMP/x/$BINARY"
 
 if [ "$DRY_RUN" = 1 ]; then
