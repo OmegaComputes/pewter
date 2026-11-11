@@ -58,9 +58,6 @@ func (a *app) cmdLogin(args []string) int {
 			return a.fail(ExitUsage, "usage_error", "unknown option "+render.Clean(x, 40)+" (try `pewter help login`)")
 		}
 	}
-	// Drop the previous credential for this profile before minting another,
-	// so a repeat login does not fill the account's active-key cap.
-	a.revokeStored()
 
 	var token string
 	var expires *time.Time
@@ -83,7 +80,7 @@ func (a *app) cmdLogin(args []string) int {
 	if !strings.HasPrefix(token, "pck_") || !keystore.ValidToken(token) {
 		return a.fail(ExitError, "bad_response", "refusing to store a token that is not a Pewter CLI key (pck_)")
 	}
-	// Prove the token works before keeping it.
+	// Prove the new key with GET /me before revoking or replacing the stored one.
 	c, err := a.client(false)
 	if err != nil {
 		return a.failErr(err)
@@ -91,11 +88,19 @@ func (a *app) cmdLogin(args []string) int {
 	c.Token = token
 	var me map[string]any
 	if err := c.Do(a.Ctx, http.MethodGet, "/me", nil, nil, true, &me); err != nil {
-		// The server already minted this credential. Drop it so a failed
-		// login does not count toward the account's active-key cap.
-		_ = a.postRevoke(token)
+		// A device login already minted this credential. Drop that new key so
+		// a failed login does not count toward the account's active-key cap.
+		// The key already stored for this profile stays in place.
+		if !withToken {
+			stored, serr := a.store.Get(a.profile)
+			if serr != nil || stored != token {
+				_ = a.postRevoke(token)
+			}
+		}
 		return a.failErr(err)
 	}
+	// The new key works. Revoke a different stored key now, then store this one.
+	a.revokePrevious(token)
 	if exp := credentialExpiry(me); exp != nil {
 		expires = exp
 	}
@@ -282,12 +287,14 @@ func parseExpiry(s string) *time.Time {
 	return nil
 }
 
-// revokeStored revokes the credential already stored for this profile.
-// A 401 (already revoked or expired) and any other revoke error are ignored
-// so a dead key cannot block a new login. The env token is not used here.
-func (a *app) revokeStored() {
+// revokePrevious revokes the credential already stored for this profile when
+// it differs from next. A 401 (already revoked or expired) and any other
+// revoke error are ignored so a dead key cannot block the new login.
+// The env token is not used here. Revoking next itself would destroy the key
+// this login is about to store.
+func (a *app) revokePrevious(next string) {
 	tok, err := a.store.Get(a.profile)
-	if err != nil || tok == "" {
+	if err != nil || tok == "" || tok == next {
 		return
 	}
 	if !keystore.ValidToken(tok) || !strings.HasPrefix(tok, "pck_") {

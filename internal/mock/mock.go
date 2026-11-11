@@ -29,6 +29,7 @@ type Server struct {
 	SlowDownOnce       bool   // first poll answers slow_down
 	VerifyURI          string // override verification_uri (tests)
 	RevokeUnauthorized bool   // self-revoke answers 401 without forgetting the token
+	MeUnauthorized     bool   // GET /me answers 401 even for a token this mock would otherwise accept
 	polls              int
 	slowed             bool
 	revoked            map[string]bool
@@ -161,6 +162,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		errJSON(w, 401, "unauthorized", "Missing or invalid token")
 	case r.Method == "GET" && path == "/me":
+		if s.MeUnauthorized {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			errJSON(w, 401, "unauthorized", "Missing or invalid token")
+			return
+		}
 		data(w, map[string]any{
 			"actor": map[string]any{"via": "api_key", "role": "agent", "principal_id": "PRN-MOCK", "agent_id": "AGT-MOCK"},
 			"credential": map[string]any{

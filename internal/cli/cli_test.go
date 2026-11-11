@@ -500,21 +500,210 @@ func TestLogoutEnvTokenDoesNotDeleteStored(t *testing.T) {
 	}
 }
 
-func TestReloginRevokesStoredFirst(t *testing.T) {
+func (r *rig) storedToken() string {
+	r.t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.dir, "tokens", "default"))
+	if err != nil {
+		r.t.Fatalf("token file: %v", err)
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// assertStoredUntouched checks that a failed login neither revoked the
+// credential on the mock nor replaced it on disk, and that whoami still works.
+// from is the Seen.Requests length before the attempt. revokes is Seen.Revokes then.
+func (r *rig) assertStoredUntouched(from, revokes int, token string) {
+	r.t.Helper()
+	if r.mock.Seen.Revokes != revokes {
+		r.t.Fatalf("stored credential revoked: revokes %d -> %d requests %v", revokes, r.mock.Seen.Revokes, r.mock.Seen.Requests[from:])
+	}
+	for _, req := range r.mock.Seen.Requests[from:] {
+		if strings.Contains(req, "revoke") {
+			r.t.Fatalf("revoke during failed login: %v", r.mock.Seen.Requests[from:])
+		}
+	}
+	if got := r.storedToken(); got != token {
+		r.t.Fatalf("stored token changed: %q", got)
+	}
+	if code, out, e := r.run("", "whoami"); code != 0 || !strings.Contains(out, "Demo Seller") {
+		r.t.Fatalf("whoami after failed login: %d %q %q", code, out, e)
+	}
+}
+
+func TestWithTokenRefusalDoesNotRevokeStored(t *testing.T) {
 	r := newRig(t)
 	r.signIn()
-	r.mock.Seen.Requests = nil
-	r.mock.Seen.Revokes = 0
-	if code, _, e := r.run("", "login"); code != 0 {
-		t.Fatalf("relogin: %d %q", code, e)
+	before := len(r.mock.Seen.Requests)
+	revokes := r.mock.Seen.Revokes
+	code, _, e := r.run("omk_examplekey000000000000\n", "login", "--with-token")
+	if code == 0 || !strings.Contains(e, "omk_") {
+		t.Fatalf("code=%d err=%q", code, e)
 	}
-	if r.mock.Seen.Revokes != 1 || len(r.mock.Seen.Requests) == 0 || r.mock.Seen.Requests[0] != "POST /auth/credentials/self/revoke" {
-		t.Fatalf("requests: %v revokes=%d", r.mock.Seen.Requests, r.mock.Seen.Revokes)
+	// Shape and prefix are refused locally. Nothing is sent, including revoke.
+	if len(r.mock.Seen.Requests) != before {
+		t.Fatalf("refused token touched the server: %v", r.mock.Seen.Requests[before:])
 	}
-	b, _ := os.ReadFile(filepath.Join(r.dir, "tokens", "default"))
-	if strings.TrimSpace(string(b)) != mock.DeviceToken {
-		t.Fatalf("new token not stored: %q", b)
+	r.assertStoredUntouched(before, revokes, mock.AgentToken)
+}
+
+func TestWithTokenRejectedByMeDoesNotRevokeStored(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	before := len(r.mock.Seen.Requests)
+	revokes := r.mock.Seen.Revokes
+	code, _, e := r.run("pck_unknown_token_0000000000\n", "login", "--with-token")
+	if code != ExitAuth {
+		t.Fatalf("code=%d err=%q", code, e)
 	}
+	sawMe := false
+	for _, req := range r.mock.Seen.Requests[before:] {
+		if req == "GET /me" {
+			sawMe = true
+		}
+	}
+	if !sawMe {
+		t.Fatalf("rejected pck_ was not checked with GET /me: %v", r.mock.Seen.Requests[before:])
+	}
+	r.assertStoredUntouched(before, revokes, mock.AgentToken)
+}
+
+func TestDeviceDeniedDoesNotRevokeStored(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	before := len(r.mock.Seen.Requests)
+	revokes := r.mock.Seen.Revokes
+	r.mock.Deny = true
+	code, _, e := r.run("", "login")
+	if code != ExitError || !strings.Contains(e, "declined") {
+		t.Fatalf("deny: %d %q", code, e)
+	}
+	r.assertStoredUntouched(before, revokes, mock.AgentToken)
+}
+
+func TestDeviceMeFailureDropsMintedKeyOnly(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	before := len(r.mock.Seen.Requests)
+	revokes := r.mock.Seen.Revokes
+	r.mock.MeUnauthorized = true
+	code, _, e := r.run("", "login")
+	if code != ExitAuth {
+		t.Fatalf("me: %d %q", code, e)
+	}
+	// The key the device flow just minted is dropped. The stored one is not.
+	if r.mock.Seen.Revokes != revokes+1 {
+		t.Fatalf("revokes=%d requests=%v", r.mock.Seen.Revokes, r.mock.Seen.Requests[before:])
+	}
+	revokeAt, meAt := -1, -1
+	for i, req := range r.mock.Seen.Requests[before:] {
+		switch req {
+		case "GET /me":
+			meAt = i
+		case "POST /auth/credentials/self/revoke":
+			revokeAt = i
+		}
+	}
+	if meAt < 0 || revokeAt < meAt {
+		t.Fatalf("minted key revoked before GET /me failed: %v", r.mock.Seen.Requests[before:])
+	}
+	if got := r.storedToken(); got != mock.AgentToken {
+		t.Fatalf("stored token changed: %q", got)
+	}
+	r.mock.MeUnauthorized = false
+	if code, out, e := r.run("", "whoami"); code != 0 || !strings.Contains(out, "Demo Seller") {
+		t.Fatalf("stored credential broken: %d %q %q", code, out, e)
+	}
+	r.env["PEWTER_TOKEN"] = mock.DeviceToken
+	if code, _, _ := r.run("", "whoami"); code == 0 {
+		t.Fatal("minted credential was not revoked")
+	}
+}
+
+func TestSuccessfulReloginRevokesOldKey(t *testing.T) {
+	assertOrder := func(t *testing.T, reqs []string) {
+		t.Helper()
+		me, rev := -1, -1
+		for i, req := range reqs {
+			if req == "GET /me" {
+				me = i
+			}
+			if req == "POST /auth/credentials/self/revoke" {
+				rev = i
+			}
+		}
+		if me < 0 || rev <= me {
+			t.Fatalf("old key revoked before GET /me accepted the new one: %v", reqs)
+		}
+	}
+	t.Run("device", func(t *testing.T) {
+		r := newRig(t)
+		r.signIn()
+		r.mock.Seen.Requests = nil
+		r.mock.Seen.Revokes = 0
+		if code, _, e := r.run("", "login"); code != 0 {
+			t.Fatalf("relogin: %d %q", code, e)
+		}
+		if r.mock.Seen.Revokes != 1 {
+			t.Fatalf("revokes=%d requests=%v", r.mock.Seen.Revokes, r.mock.Seen.Requests)
+		}
+		assertOrder(t, r.mock.Seen.Requests)
+		if got := r.storedToken(); got != mock.DeviceToken {
+			t.Fatalf("new token not stored: %q", got)
+		}
+		if code, out, e := r.run("", "whoami"); code != 0 || !strings.Contains(out, "Demo Seller") {
+			t.Fatalf("whoami: %d %q %q", code, out, e)
+		}
+		r.env["PEWTER_TOKEN"] = mock.AgentToken
+		if code, _, _ := r.run("", "whoami"); code == 0 {
+			t.Fatal("previous credential still accepted")
+		}
+	})
+	t.Run("with-token", func(t *testing.T) {
+		r := newRig(t)
+		r.signIn()
+		r.mock.Seen.Requests = nil
+		r.mock.Seen.Revokes = 0
+		if code, _, e := r.run(mock.DeviceToken+"\n", "login", "--with-token"); code != 0 {
+			t.Fatalf("relogin: %d %q", code, e)
+		}
+		if r.mock.Seen.Revokes != 1 {
+			t.Fatalf("revokes=%d requests=%v", r.mock.Seen.Revokes, r.mock.Seen.Requests)
+		}
+		assertOrder(t, r.mock.Seen.Requests)
+		if got := r.storedToken(); got != mock.DeviceToken {
+			t.Fatalf("new token not stored: %q", got)
+		}
+		if code, out, e := r.run("", "whoami"); code != 0 || !strings.Contains(out, "Demo Seller") {
+			t.Fatalf("whoami: %d %q %q", code, out, e)
+		}
+		r.env["PEWTER_TOKEN"] = mock.AgentToken
+		if code, _, _ := r.run("", "whoami"); code == 0 {
+			t.Fatal("previous credential still accepted")
+		}
+	})
+	t.Run("same token", func(t *testing.T) {
+		r := newRig(t)
+		r.signIn()
+		r.mock.Seen.Requests = nil
+		r.mock.Seen.Revokes = 0
+		if code, _, e := r.run(mock.AgentToken+"\n", "login", "--with-token"); code != 0 {
+			t.Fatalf("relogin: %d %q", code, e)
+		}
+		if r.mock.Seen.Revokes != 0 {
+			t.Fatalf("same key was revoked: revokes=%d requests=%v", r.mock.Seen.Revokes, r.mock.Seen.Requests)
+		}
+		for _, req := range r.mock.Seen.Requests {
+			if strings.Contains(req, "revoke") {
+				t.Fatalf("revoke request for the key being stored: %v", r.mock.Seen.Requests)
+			}
+		}
+		if got := r.storedToken(); got != mock.AgentToken {
+			t.Fatalf("stored token changed: %q", got)
+		}
+		if code, out, e := r.run("", "whoami"); code != 0 || !strings.Contains(out, "Demo Seller") {
+			t.Fatalf("whoami: %d %q %q", code, out, e)
+		}
+	})
 }
 
 func TestExpiredStoredTokenIsNotSent(t *testing.T) {
