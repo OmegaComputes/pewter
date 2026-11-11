@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,47 @@ func TestValidateBase(t *testing.T) {
 		if _, err := ValidateBase(u); err == nil {
 			t.Errorf("%s accepted", u)
 		}
+	}
+}
+
+func TestAllowStagingOrLoopbackOnly(t *testing.T) {
+	ok := []string{
+		"https://pewter-staging-production.up.railway.app/api/v1",
+		"https://pewter-staging-production.up.railway.app/api/v1/",
+		"https://Pewter-Staging-Production.up.railway.app/api/v1",
+		"http://localhost:3000/api/v1",
+		"https://localhost/api/v1",
+		"http://127.0.0.1:8799/api/v1",
+		"http://[::1]:80/api/v1",
+		"https://[::1]/api/v1",
+	}
+	for _, u := range ok {
+		if _, err := Allow(u); err != nil {
+			t.Errorf("%s rejected: %v", u, err)
+		}
+	}
+	refused := []string{
+		"https://api.omegacompute.com/api/v1",
+		"https://example.com/api/v1",
+		"http://example.com/api/v1",
+		"http://pewter-staging-production.up.railway.app/api/v1",
+		"https://pewter-staging-production.up.railway.app.evil.com/api/v1",
+		"https://127.0.0.1.evil.com/api/v1",
+	}
+	for _, u := range refused {
+		_, err := Allow(u)
+		if !errors.Is(err, ErrHostNotAllowed) {
+			t.Errorf("%s err=%v", u, err)
+		}
+		if err != nil && strings.Contains(err.Error(), "://") {
+			t.Errorf("%s error echoes a URL: %v", u, err)
+		}
+	}
+	if _, err := Allow("https://user:secret@example.com/api/v1"); err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("credentials: %v", err)
+	}
+	if _, err := New("https://api.omegacompute.com/api/v1", "", "t"); !errors.Is(err, ErrHostNotAllowed) {
+		t.Fatalf("New: %v", err)
 	}
 }
 

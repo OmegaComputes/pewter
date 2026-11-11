@@ -9,9 +9,9 @@ import (
 	"time"
 )
 
-// DefaultAPI is the public Pewter API base. Override with --api-url or the
-// PEWTER_API_URL environment variable (https only; http is allowed for localhost).
-const DefaultAPI = "https://api.omegacompute.com/api/v1"
+// DefaultAPI is the Pewter staging API for v0.1.0. The client also allows
+// http or https on loopback, for tests. Every other host is refused.
+const DefaultAPI = "https://pewter-staging-production.up.railway.app/api/v1"
 
 // File is the on-disk, non-secret config.
 type File struct {

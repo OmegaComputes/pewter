@@ -23,6 +23,12 @@ import (
 
 const maxBody = 4 << 20 // 4 MiB
 
+// StagingHost is the only non-loopback API host this release will call.
+const StagingHost = "pewter-staging-production.up.railway.app"
+
+// ErrHostNotAllowed means the URL is not the staging API and not loopback.
+var ErrHostNotAllowed = errors.New("v0.1.0 talks to the Pewter staging API only and production is not enabled in this release")
+
 // Error is an API error envelope: {"error":{"code","message","details","request_id"}}.
 type Error struct {
 	Status    int
@@ -70,9 +76,49 @@ func ValidateBase(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// New builds a client. The base URL is validated.
+type hostRefused struct{ host string }
+
+func (e *hostRefused) Error() string {
+	return fmt.Sprintf("%s (refusing %s)", ErrHostNotAllowed.Error(), e.host)
+}
+
+func (e *hostRefused) Unwrap() error { return ErrHostNotAllowed }
+
+func loopbackHost(h string) bool {
+	if strings.EqualFold(h, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+// Allow is the v0.1.0 host policy: https to StagingHost, or http(s) to loopback.
+// Every other host is refused before a request is sent.
+func Allow(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(raw), "/"))
+	if err != nil || u.Host == "" || u.Scheme == "" {
+		return nil, fmt.Errorf("invalid API URL %q", raw)
+	}
+	if u.User != nil {
+		return nil, errors.New("API URL must not contain credentials")
+	}
+	switch u.Scheme {
+	case "https", "http":
+	default:
+		return nil, fmt.Errorf("unsupported URL scheme %q", u.Scheme)
+	}
+	if loopbackHost(u.Hostname()) {
+		return u, nil
+	}
+	if u.Scheme == "https" && strings.EqualFold(u.Hostname(), StagingHost) {
+		return u, nil
+	}
+	return nil, &hostRefused{host: u.Hostname()}
+}
+
+// New builds a client. The base URL must pass Allow.
 func New(base, token, userAgent string) (*Client, error) {
-	u, err := ValidateBase(base)
+	u, err := Allow(base)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,6 @@
-// Package cli implements the `pewter` command. It is read-only by design in
-// this prototype: the only writes are the device-code login handshake and the
-// local token store.
+// Package cli implements the `pewter` command. v0.1.0 is read-only aside from
+// device login and credential revoke. It talks only to the Pewter staging API,
+// or to loopback for tests.
 package cli
 
 import (
@@ -107,6 +107,9 @@ func Run(args []string, env Env) int {
 		return a.cmdCompletion(cargs)
 	}
 	if err := a.init(); err != nil {
+		if errors.Is(err, api.ErrHostNotAllowed) {
+			return a.fail(ExitUsage, "api_host", err.Error())
+		}
 		return a.fail(ExitError, "config_error", err.Error())
 	}
 	switch cmd {
@@ -191,7 +194,7 @@ func (a *app) init() error {
 		return fmt.Errorf("invalid profile name %q", a.profile)
 	}
 	a.apiURL = firstNonEmpty(a.g.apiURL, a.Getenv("PEWTER_API_URL"), a.cfg.APIURL, config.DefaultAPI)
-	if _, err := api.ValidateBase(a.apiURL); err != nil {
+	if _, err := api.Allow(a.apiURL); err != nil {
 		return err
 	}
 	ks := a.Keystore
@@ -211,6 +214,23 @@ func firstNonEmpty(v ...string) string {
 	return ""
 }
 
+func (a *app) userAgent() string {
+	return fmt.Sprintf("pewter-cli/%s (%s/%s)", version.Version, runtime.GOOS, runtime.GOARCH)
+}
+
+// pckError describes a token that is well formed but not a Pewter CLI key.
+// It never includes the token.
+func pckError(token string) string {
+	switch {
+	case strings.HasPrefix(token, "omk_"):
+		return "refusing an omk_ key: v0.1.0 accepts only a Pewter CLI key (pck_)"
+	case strings.HasPrefix(token, "pws_"):
+		return "refusing a pws_ session: v0.1.0 accepts only a Pewter CLI key (pck_)"
+	default:
+		return "token must be a Pewter CLI key starting with pck_"
+	}
+}
+
 // client builds an API client. needAuth resolves a token (env wins over the store).
 func (a *app) client(needAuth bool) (*api.Client, error) {
 	token := ""
@@ -219,16 +239,25 @@ func (a *app) client(needAuth bool) (*api.Client, error) {
 			if !keystore.ValidToken(t) {
 				return nil, &api.Error{Status: 401, Code: "unauthorized", Message: "PEWTER_TOKEN has an unexpected shape"}
 			}
+			if !strings.HasPrefix(t, "pck_") {
+				return nil, &api.Error{Status: 401, Code: "unauthorized", Message: pckError(t)}
+			}
 			token = t
 		} else {
+			if a.cfg.ExpiresAt != nil && !a.cfg.ExpiresAt.After(time.Now()) {
+				return nil, &api.Error{Status: 401, Code: "expired_token", Message: "the API key has expired. Run `pewter login`"}
+			}
 			t, err := a.store.Get(a.profile)
 			if err != nil {
 				return nil, &api.Error{Status: 401, Code: "unauthorized", Message: "not signed in (run `pewter login`)"}
 			}
+			if !keystore.ValidToken(t) || !strings.HasPrefix(t, "pck_") {
+				return nil, &api.Error{Status: 401, Code: "unauthorized", Message: "stored token is not a Pewter CLI key (pck_). Run `pewter login`"}
+			}
 			token = t
 		}
 	}
-	c, err := api.New(a.apiURL, token, fmt.Sprintf("pewter-cli/%s (%s/%s)", version.Version, runtime.GOOS, runtime.GOARCH))
+	c, err := api.New(a.apiURL, token, a.userAgent())
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +324,20 @@ func (a *app) get(path string, q url.Values, auth bool) (json.RawMessage, error)
 		return nil, err
 	}
 	return raw, nil
+}
+
+// finish prints a projected value as JSON, or calls human().
+func (a *app) finish(v any, human func() error) int {
+	if a.g.json {
+		if err := render.JSON(a.Stdout, v); err != nil {
+			return a.fail(ExitError, "error", err.Error())
+		}
+		return ExitOK
+	}
+	if err := human(); err != nil {
+		return a.fail(ExitError, "bad_response", err.Error())
+	}
+	return ExitOK
 }
 
 // emit prints raw JSON (--json) or calls human().

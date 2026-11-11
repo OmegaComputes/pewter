@@ -1,4 +1,4 @@
-// Command pewter is the Pewter command-line client (prototype).
+// Command pewter is the Pewter command-line client.
 package main
 
 import (

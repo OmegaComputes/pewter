@@ -40,19 +40,68 @@ func usd(v any) string {
 	return fmt.Sprintf("%.2f", f)
 }
 
+func apiHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return raw
+	}
+	return u.Hostname()
+}
+
 func (a *app) cmdStatus() int {
 	raw, err := a.get("/health", nil, false)
 	if err != nil {
 		return a.failErr(err)
 	}
-	return a.emit(raw, func() error {
-		var h map[string]any
-		if err := json.Unmarshal(raw, &h); err != nil {
-			return err
-		}
-		fmt.Fprintf(a.Stdout, "API      %s\nstatus   %s\nversion  %s\ntime     %s\n", render.Clean(a.apiURL, 120), render.Clean(str(h["status"]), 20), render.Clean(str(h["api_version"]), 20), render.Clean(str(h["time"]), 40))
+	var h map[string]any
+	if err := json.Unmarshal(raw, &h); err != nil {
+		return a.fail(ExitError, "bad_response", "server sent invalid JSON")
+	}
+	host := apiHost(a.apiURL)
+	h["host"] = host
+	return a.finish(h, func() error {
+		fmt.Fprintf(a.Stdout, "host     %s\nAPI      %s\nstatus   %s\nversion  %s\ntime     %s\n", render.Clean(host, 120), render.Clean(a.apiURL, 200), render.Clean(str(h["status"]), 20), render.Clean(str(h["api_version"]), 20), render.Clean(str(h["time"]), 40))
 		return nil
 	})
+}
+
+type whoamiOut struct {
+	DisplayName  string   `json:"display_name"`
+	CredentialID string   `json:"credential_id"`
+	Scopes       []string `json:"scopes"`
+	ExpiresAt    string   `json:"expires_at"`
+	Sandbox      bool     `json:"sandbox"`
+	APIHost      string   `json:"api_host"`
+}
+
+func whoamiView(d map[string]any, host string) whoamiOut {
+	pr := m(d["principal"])
+	cr := m(d["credential"])
+	var scopes []string
+	if raw, ok := cr["scopes"].([]any); ok {
+		for _, s := range raw {
+			if t := render.Clean(str(s), 40); t != "" {
+				scopes = append(scopes, t)
+			}
+		}
+	}
+	if scopes == nil {
+		scopes = []string{}
+	}
+	sandbox := false
+	if v, ok := cr["sandbox_only"].(bool); ok {
+		sandbox = v
+	} else if d["sandbox_only"] == true {
+		sandbox = true
+	}
+	return whoamiOut{
+		DisplayName:  render.Clean(str(pr["display_name"]), 80),
+		CredentialID: render.Clean(str(cr["id"]), 80),
+		Scopes:       scopes,
+		ExpiresAt:    render.Clean(str(cr["expires_at"]), 40),
+		Sandbox:      sandbox,
+		APIHost:      host,
+	}
 }
 
 func (a *app) cmdWhoami() int {
@@ -60,24 +109,21 @@ func (a *app) cmdWhoami() int {
 	if err != nil {
 		return a.failErr(err)
 	}
-	return a.emit(raw, func() error {
-		var d map[string]any
-		if err := json.Unmarshal(raw, &d); err != nil {
-			return err
+	var d map[string]any
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return a.fail(ExitError, "bad_response", "server sent invalid JSON")
+	}
+	view := whoamiView(d, apiHost(a.apiURL))
+	return a.finish(view, func() error {
+		exp := view.ExpiresAt
+		if exp == "" {
+			exp = "-"
 		}
-		actor, pr, ag := m(d["actor"]), m(d["principal"]), m(d["agent"])
-		name := firstNonEmpty(str(pr["display_name"]), str(d["name"]), str(d["id"]))
-		fmt.Fprintf(a.Stdout, "signed in  %s\n", render.Clean(name, 80))
-		if v := str(actor["via"]); v != "" {
-			fmt.Fprintf(a.Stdout, "via        %s (%s)\n", render.Clean(v, 20), render.Clean(str(actor["role"]), 20))
+		scopes := strings.Join(view.Scopes, ", ")
+		if scopes == "" {
+			scopes = "-"
 		}
-		if v := str(ag["name"]); v != "" {
-			fmt.Fprintf(a.Stdout, "agent      %s\n", render.Clean(v, 80))
-		}
-		if d["sandbox_only"] == true {
-			fmt.Fprintln(a.Stdout, "mode       sandbox")
-		}
-		fmt.Fprintf(a.Stdout, "api        %s\n", render.Clean(a.apiURL, 120))
+		fmt.Fprintf(a.Stdout, "name        %s\ncredential  %s\nscopes      %s\nexpires     %s\nsandbox     %t\nhost        %s\n", view.DisplayName, view.CredentialID, scopes, exp, view.Sandbox, render.Clean(view.APIHost, 120))
 		return nil
 	})
 }
@@ -166,34 +212,57 @@ func (a *app) cmdListings(args []string) int {
 	if err != nil {
 		return a.failErr(err)
 	}
-	return a.emit(raw, func() error {
-		var rows []map[string]any
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			return err
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return a.fail(ExitError, "bad_response", "server sent invalid JSON")
+	}
+	views := make([]listingOut, 0, len(rows))
+	var table [][]string
+	for _, r := range rows {
+		if status != "" && str(r["status"]) != status {
+			continue
 		}
-		var out [][]string
-		for _, r := range rows {
-			if status != "" && str(r["status"]) != status {
-				continue
-			}
-			cap, gpu, price, as := m(r["capability"]), m(m(r["capability"])["gpu"]), m(m(r["capability"])["price"]), m(r["assurance"])
-			count := 0.0
-			if c, ok := gpu["count_per_node"].(float64); ok {
-				count = c
-				if n, ok := gpu["nodes"].(float64); ok {
-					count = c * n
-				}
-			}
-			model := str(gpu["model"])
-			if count > 0 {
-				model = fmt.Sprintf("%s x%d", model, int(count))
-			}
-			_ = cap
-			out = append(out, []string{str(r["id"]), str(r["status"]), str(r["title"]), model, usd(price["amount_usd"]), str(as["tier"]), str(as["validation"])})
-		}
-		render.Table(a.Stdout, []string{"ID", "STATUS", "TITLE", "GPUS", "USD/GPU-HR", "TIER", "VALIDATION"}, out)
+		v := listingView(r)
+		views = append(views, v)
+		table = append(table, []string{v.ID, v.Status, v.Title, v.GPUs, usd(v.USDPerGPUHr), v.Tier, v.Validation})
+	}
+	return a.finish(views, func() error {
+		render.Table(a.Stdout, []string{"ID", "STATUS", "TITLE", "GPUS", "USD/GPU-HR", "TIER", "VALIDATION"}, table)
 		return nil
 	})
+}
+
+type listingOut struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"`
+	Title       string `json:"title"`
+	GPUs        string `json:"gpus"`
+	USDPerGPUHr any    `json:"usd_per_gpu_hr"`
+	Tier        string `json:"tier"`
+	Validation  string `json:"validation"`
+}
+
+func listingView(r map[string]any) listingOut {
+	gpu, price, as := m(m(r["capability"])["gpu"]), m(m(r["capability"])["price"]), m(r["assurance"])
+	count := 0.0
+	if c, ok := gpu["count_per_node"].(float64); ok {
+		count = c
+		if n, ok := gpu["nodes"].(float64); ok {
+			count = c * n
+		}
+	}
+	model := str(gpu["model"])
+	if count > 0 {
+		model = fmt.Sprintf("%s x%d", model, int(count))
+	}
+	var priceOut any
+	if _, ok := price["amount_usd"].(float64); ok {
+		priceOut = price["amount_usd"]
+	}
+	return listingOut{
+		ID: render.Clean(str(r["id"]), 80), Status: render.Clean(str(r["status"]), 40), Title: render.Clean(str(r["title"]), 120),
+		GPUs: render.Clean(model, 40), USDPerGPUHr: priceOut, Tier: render.Clean(str(as["tier"]), 20), Validation: render.Clean(str(as["validation"]), 40),
+	}
 }
 
 func (a *app) cmdOrders(args []string) int {
@@ -219,18 +288,49 @@ func (a *app) cmdOrders(args []string) int {
 	if err != nil {
 		return a.failErr(err)
 	}
-	return a.emit(raw, func() error {
-		var rows []map[string]any
-		if err := json.Unmarshal(raw, &rows); err != nil {
-			return err
-		}
-		var out [][]string
-		for _, r := range rows {
-			out = append(out, []string{str(r["id"]), str(r["side"]), str(r["status"]), str(r["instrument_id"]), usd(r["price_usd_per_unit"]), str(r["gpus"]), str(r["hours"]), str(r["book"])})
-		}
-		render.Table(a.Stdout, []string{"ORDER", "SIDE", "STATUS", "INSTRUMENT", "USD/GPU-HR", "GPUS", "HOURS", "BOOK"}, out)
+	var rows []map[string]any
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return a.fail(ExitError, "bad_response", "server sent invalid JSON")
+	}
+	views := make([]orderOut, 0, len(rows))
+	var table [][]string
+	for _, r := range rows {
+		v := orderView(r)
+		views = append(views, v)
+		table = append(table, []string{v.ID, v.Side, v.Status, v.InstrumentID, usd(v.USDPerGPUHr), str(v.GPUs), str(v.Hours), v.Book})
+	}
+	return a.finish(views, func() error {
+		render.Table(a.Stdout, []string{"ORDER", "SIDE", "STATUS", "INSTRUMENT", "USD/GPU-HR", "GPUS", "HOURS", "BOOK"}, table)
 		return nil
 	})
+}
+
+type orderOut struct {
+	ID           string `json:"id"`
+	Side         string `json:"side"`
+	Status       string `json:"status"`
+	InstrumentID string `json:"instrument_id"`
+	USDPerGPUHr  any    `json:"usd_per_gpu_hr"`
+	GPUs         any    `json:"gpus"`
+	Hours        any    `json:"hours"`
+	Book         string `json:"book"`
+}
+
+func orderView(r map[string]any) orderOut {
+	return orderOut{
+		ID: render.Clean(str(r["id"]), 80), Side: render.Clean(str(r["side"]), 20), Status: render.Clean(str(r["status"]), 40),
+		InstrumentID: render.Clean(str(r["instrument_id"]), 80), USDPerGPUHr: numOrNil(r["price_usd_per_unit"]),
+		GPUs: numOrNil(r["gpus"]), Hours: numOrNil(r["hours"]), Book: render.Clean(str(r["book"]), 20),
+	}
+}
+
+func numOrNil(v any) any {
+	switch v.(type) {
+	case float64, json.Number:
+		return v
+	default:
+		return nil
+	}
 }
 
 func (a *app) cmdBalance() int {
@@ -238,26 +338,52 @@ func (a *app) cmdBalance() int {
 	if err != nil {
 		return a.failErr(err)
 	}
-	return a.emit(raw, func() error {
-		var w map[string]any
-		if err := json.Unmarshal(raw, &w); err != nil {
-			return err
-		}
+	var w map[string]any
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return a.fail(ExitError, "bad_response", "server sent invalid JSON")
+	}
+	view := balanceView(w)
+	return a.finish(view, func() error {
 		label := "Live balance"
-		if w["sandbox"] == true {
+		if view.Sandbox {
 			label = "Sandbox balance (simulated funds)"
 		}
-		cur := firstNonEmpty(str(w["currency"]), "USD")
+		cur := firstNonEmpty(view.Currency, "USD")
 		fmt.Fprintf(a.Stdout, "%s\n", label)
-		fmt.Fprintf(a.Stdout, "  balance    %s %s\n  reserved   %s %s\n  available  %s %s\n", usd(w["balance_usd"]), cur, usd(w["reserved_usd"]), cur, usd(w["available_usd"]), cur)
-		if es, ok := w["entries"].([]any); ok {
-			fmt.Fprintf(a.Stdout, "  entries    %d (use --json for the list)\n", len(es))
+		fmt.Fprintf(a.Stdout, "  balance    %s %s\n  reserved   %s %s\n  available  %s %s\n", usd(view.BalanceUSD), cur, usd(view.ReservedUSD), cur, usd(view.AvailableUSD), cur)
+		if view.Entries != nil {
+			fmt.Fprintf(a.Stdout, "  entries    %d (use --json for the list)\n", len(view.Entries))
 		}
-		if n := str(w["note"]); n != "" {
-			fmt.Fprintf(a.Stdout, "\n%s\n", render.Clean(n, 300))
+		if view.Note != "" {
+			fmt.Fprintf(a.Stdout, "\n%s\n", view.Note)
 		}
 		return nil
 	})
+}
+
+type balanceOut struct {
+	Sandbox      bool   `json:"sandbox"`
+	Currency     string `json:"currency"`
+	BalanceUSD   any    `json:"balance_usd"`
+	ReservedUSD  any    `json:"reserved_usd"`
+	AvailableUSD any    `json:"available_usd"`
+	Entries      []any  `json:"entries,omitempty"`
+	Note         string `json:"note,omitempty"`
+}
+
+func balanceView(w map[string]any) balanceOut {
+	out := balanceOut{
+		Sandbox: w["sandbox"] == true, Currency: render.Clean(str(w["currency"]), 12),
+		BalanceUSD: numOrNil(w["balance_usd"]), ReservedUSD: numOrNil(w["reserved_usd"]), AvailableUSD: numOrNil(w["available_usd"]),
+		Note: render.Clean(str(w["note"]), 300),
+	}
+	if es, ok := w["entries"].([]any); ok {
+		out.Entries = make([]any, 0, len(es))
+		for _, e := range es {
+			out.Entries = append(out.Entries, dropIdentity(e))
+		}
+	}
+	return out
 }
 
 // cmdVerify is read-only: it shows the latest validation runs of one of your listings.
@@ -273,30 +399,89 @@ func (a *app) cmdVerify(args []string) int {
 	if err != nil {
 		return a.failErr(err)
 	}
-	return a.emit(raw, func() error {
-		var d struct {
-			Listing map[string]any   `json:"listing"`
-			Runs    []map[string]any `json:"runs"`
-			Avail   bool             `json:"validator_available"`
-		}
-		if err := json.Unmarshal(raw, &d); err != nil {
-			return err
-		}
-		as := m(d.Listing["assurance"])
-		fmt.Fprintf(a.Stdout, "listing    %s (%s)\ntier       %s\nvalidation %s\n", render.Clean(str(d.Listing["id"]), 40), render.Clean(str(d.Listing["status"]), 20), render.Clean(str(as["tier"]), 10), render.Clean(str(as["validation"]), 30))
-		if sim := as["simulated"]; sim == true {
+	var d struct {
+		Listing map[string]any   `json:"listing"`
+		Runs    []map[string]any `json:"runs"`
+	}
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return a.fail(ExitError, "bad_response", "server sent invalid JSON")
+	}
+	view := verifyView(d.Listing, d.Runs)
+	return a.finish(view, func() error {
+		fmt.Fprintf(a.Stdout, "listing    %s (%s)\ntier       %s\nvalidation %s\n", view.ID, view.Status, view.Tier, view.Validation)
+		if view.Simulated {
 			fmt.Fprintln(a.Stdout, "note       simulated validation (sandbox)")
 		}
-		var out [][]string
-		for _, r := range d.Runs {
-			out = append(out, []string{str(r["id"]), str(r["kind"]), str(r["state"]), str(r["tier_after"]), str(r["finished_at"])})
+		var table [][]string
+		for _, r := range view.Runs {
+			table = append(table, []string{r.ID, r.Kind, r.State, r.Tier, r.Finished})
 		}
-		if len(out) > 0 {
+		if len(table) > 0 {
 			fmt.Fprintln(a.Stdout)
-			render.Table(a.Stdout, []string{"RUN", "KIND", "STATE", "TIER", "FINISHED"}, out)
+			render.Table(a.Stdout, []string{"RUN", "KIND", "STATE", "TIER", "FINISHED"}, table)
 		}
 		return nil
 	})
+}
+
+type verifyOut struct {
+	ID         string   `json:"id"`
+	Status     string   `json:"status"`
+	Tier       string   `json:"tier"`
+	Validation string   `json:"validation"`
+	Simulated  bool     `json:"simulated"`
+	Runs       []runOut `json:"runs"`
+}
+
+type runOut struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	State    string `json:"state"`
+	Tier     string `json:"tier"`
+	Finished string `json:"finished_at"`
+}
+
+func verifyView(listing map[string]any, runs []map[string]any) verifyOut {
+	as := m(listing["assurance"])
+	out := verifyOut{
+		ID: render.Clean(str(listing["id"]), 40), Status: render.Clean(str(listing["status"]), 20),
+		Tier: render.Clean(str(as["tier"]), 10), Validation: render.Clean(str(as["validation"]), 30),
+		Simulated: as["simulated"] == true, Runs: []runOut{},
+	}
+	for _, r := range runs {
+		out.Runs = append(out.Runs, runOut{
+			ID: render.Clean(str(r["id"]), 40), Kind: render.Clean(str(r["kind"]), 40), State: render.Clean(str(r["state"]), 40),
+			Tier: render.Clean(str(r["tier_after"]), 10), Finished: render.Clean(str(r["finished_at"]), 40),
+		})
+	}
+	return out
+}
+
+// dropIdentity removes account identifiers from a JSON value, recursively.
+func dropIdentity(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			switch k {
+			case "principal_id", "agent_id", "email", "phone", "company":
+				continue
+			default:
+				out[k] = dropIdentity(val)
+			}
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = dropIdentity(val)
+		}
+		return out
+	case string:
+		return render.Clean(t, 300)
+	default:
+		return v
+	}
 }
 
 func validID(s string) bool {

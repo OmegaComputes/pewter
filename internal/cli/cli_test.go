@@ -78,7 +78,7 @@ func TestVersionJSON(t *testing.T) {
 
 func TestHelpAndUsageCodes(t *testing.T) {
 	r := newRig(t)
-	if code, out, _ := r.run("", "--help"); code != 0 || !strings.Contains(out, "pew <command>") || !strings.Contains(out, "orchestration") {
+	if code, out, _ := r.run("", "--help"); code != 0 || !strings.Contains(out, "pew <command>") || !strings.Contains(out, "orchestration") || strings.Contains(out, "Prototype") {
 		t.Fatalf("help: %d %q", code, out)
 	}
 	if code, _, _ := r.run(""); code != ExitUsage {
@@ -130,19 +130,33 @@ func TestLoginWithTokenRejects(t *testing.T) {
 	cases := map[string]string{
 		"":                                   "no token",
 		"bad token with spaces 1234567890\n": "unexpected shape",
+		"omk_examplekey000000000000\n":       "omk_",
+		"pws_examplesession000000000\n":      "pws_",
+		"tok_wrong000000000000000000\n":      "pck_",
 	}
 	for in, want := range cases {
+		before := len(r.mock.Seen.Requests)
 		code, _, e := r.run(in, "login", "--with-token")
 		if code != ExitUsage || !strings.Contains(e, want) {
 			t.Fatalf("in=%q code=%d err=%q want %q", in, code, e, want)
 		}
+		if strings.Contains(e, strings.TrimSpace(in)) && strings.TrimSpace(in) != "" {
+			t.Fatalf("rejected token echoed: %q", e)
+		}
+		if len(r.mock.Seen.Requests) != before {
+			t.Fatalf("rejected token was sent: %v", r.mock.Seen.Requests[before:])
+		}
 	}
-	// a syntactically fine but wrong token is rejected by the server and not stored
-	if code, _, _ := r.run("tok_wrong000000000000000000\n", "login", "--with-token"); code != ExitAuth {
-		t.Fatalf("wrong token code=%d", code)
+	// a pck_ the server does not know is not stored
+	if code, _, e := r.run("pck_unknown_token_0000000000\n", "login", "--with-token"); code != ExitAuth {
+		t.Fatalf("unknown pck_ code=%d err=%q", code, e)
 	}
 	if _, err := os.Stat(filepath.Join(r.dir, "tokens", "default")); err == nil {
 		t.Fatal("rejected token was stored")
+	}
+	joined := strings.Join(r.mock.Seen.Requests, " ")
+	if !strings.Contains(joined, "GET /me") {
+		t.Fatal("a well formed pck_ should be checked with GET /me")
 	}
 }
 
@@ -153,8 +167,14 @@ func TestDeviceFlowSuccess(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "Signed in as") {
 		t.Fatalf("code=%d out=%q err=%q", code, out, e)
 	}
-	if !strings.Contains(e, "WXYZ-4821") || !strings.Contains(e, "/device") {
+	if !strings.Contains(e, "WXYZ-4821") || !strings.Contains(e, "/device") || !strings.Contains(e, "Pewter app") {
 		t.Fatalf("code and link not shown: %q", e)
+	}
+	if r.mock.Seen.ClientID != "pewter-cli" || strings.Join(r.mock.Seen.Scopes, ",") != "deals:read,market:read,verification:read" {
+		t.Fatalf("device body: id=%q scopes=%v name=%q", r.mock.Seen.ClientID, r.mock.Seen.Scopes, r.mock.Seen.ClientName)
+	}
+	if r.mock.Seen.ClientName == "" || len([]rune(r.mock.Seen.ClientName)) > 60 || strings.ContainsAny(r.mock.Seen.ClientName, "\x00\x1b") {
+		t.Fatalf("client_name: %q", r.mock.Seen.ClientName)
 	}
 	r.assertNoSecrets()
 	tok, _ := os.ReadFile(filepath.Join(r.dir, "tokens", "default"))
@@ -274,6 +294,14 @@ func TestUnauthenticatedAndEnvToken(t *testing.T) {
 	if code, _, _ := r.run("", "orders"); code != ExitAuth {
 		t.Fatalf("bad env token: %d", code)
 	}
+	r.env["PEWTER_TOKEN"] = "omk_examplekey000000000000"
+	if code, _, e := r.run("", "orders"); code != ExitAuth || !strings.Contains(e, "omk_") || strings.Contains(e, "omk_examplekey") {
+		t.Fatalf("omk env: %d %q", code, e)
+	}
+	r.env["PEWTER_TOKEN"] = "pws_examplesession000000000"
+	if code, _, e := r.run("", "orders"); code != ExitAuth || !strings.Contains(e, "pws_") {
+		t.Fatalf("pws env: %d %q", code, e)
+	}
 	r.assertNoSecrets()
 }
 
@@ -298,6 +326,24 @@ func TestAPIURLRules(t *testing.T) {
 	}
 	if code, _, _ := r.run("", "--api-url", r.srv.URL+"/api/v1", "status"); code != 0 {
 		t.Fatal("loopback http should be allowed")
+	}
+	for _, u := range []string{"https://api.omegacompute.com/api/v1", "https://evil.example/api/v1"} {
+		before := len(r.mock.Seen.Requests)
+		code, _, e := r.run("", "--api-url", u, "status")
+		if code != ExitUsage || !strings.Contains(e, "staging API only") || !strings.Contains(e, "production is not enabled") {
+			t.Fatalf("%s: code=%d err=%q", u, code, e)
+		}
+		if len(r.mock.Seen.Requests) != before {
+			t.Fatalf("%s sent a request", u)
+		}
+	}
+	// A saved production URL is refused the same way, with no env override.
+	r.env["PEWTER_API_URL"] = ""
+	if err := os.WriteFile(filepath.Join(r.dir, "config.json"), []byte(`{"api_url":"https://api.omegacompute.com/api/v1"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, e := r.run("", "status"); code != ExitUsage || !strings.Contains(e, "staging API only") {
+		t.Fatalf("saved config: code=%d err=%q", code, e)
 	}
 }
 
@@ -337,7 +383,199 @@ func TestCompletion(t *testing.T) {
 			t.Fatalf("%s: %d", sh, code)
 		}
 	}
+	if code, out, _ := r.run("", "completion", "bash"); code != 0 || !strings.Contains(out, "--with-token") {
+		t.Fatalf("bash completion missing --with-token: %d %q", code, out)
+	}
 	if code, _, _ := r.run("", "completion", "fish"); code != ExitUsage {
 		t.Fatal("fish should be a usage error")
+	}
+}
+
+func TestCleanClientName(t *testing.T) {
+	if cleanClientName("") != "pewter-cli" || cleanClientName("\x1b\n\t") != "pewter-cli" {
+		t.Fatal("empty name should fall back")
+	}
+	if got := cleanClientName("box\x1b[2Jhost"); got != "box[2Jhost" {
+		t.Fatalf("got %q", got)
+	}
+	if n := len([]rune(cleanClientName(strings.Repeat("ü", 80)))); n != 60 {
+		t.Fatalf("runes=%d", n)
+	}
+}
+
+func TestWhoamiProjectsIdentityAway(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	code, out, e := r.run("", "whoami")
+	if code != 0 || !strings.Contains(out, "Demo Seller") || !strings.Contains(out, mock.CredentialID) || !strings.Contains(out, "deals:read") || !strings.Contains(out, "127.0.0.1") {
+		t.Fatalf("whoami: %d %q %q", code, out, e)
+	}
+	for _, hidden := range []string{"demo@example.invalid", "+10000000000", "Example Co", "PRN-MOCK", "principal_id", "AGT-MOCK"} {
+		if strings.Contains(out, hidden) {
+			t.Fatalf("whoami leaked %q in %q", hidden, out)
+		}
+	}
+	code, out, _ = r.run("", "whoami", "--json")
+	var v map[string]any
+	if code != 0 || json.Unmarshal([]byte(out), &v) != nil {
+		t.Fatalf("json: %d %q", code, out)
+	}
+	for _, k := range []string{"email", "phone", "company", "principal_id", "agent_id", "actor", "principal"} {
+		if _, ok := v[k]; ok {
+			t.Fatalf("json has %s: %s", k, out)
+		}
+	}
+	if v["display_name"] != "Demo Seller" || v["credential_id"] != mock.CredentialID || v["sandbox"] != true || v["api_host"] != "127.0.0.1" || v["expires_at"] == "" {
+		t.Fatalf("view: %#v", v)
+	}
+}
+
+func TestJSONDropsPrincipalAndAgent(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	for _, args := range [][]string{{"listings", "--json"}, {"orders", "--json"}, {"balance", "--json"}, {"verify", "LST-MOCK0001", "--json"}} {
+		_, out, _ := r.run("", args...)
+		for _, hidden := range []string{"principal_id", "agent_id", "PRN-MOCK", "AGT-MOCK", "demo@example.invalid"} {
+			if strings.Contains(out, hidden) {
+				t.Fatalf("%v leaked %q in %s", args, hidden, out)
+			}
+		}
+	}
+	_, orders, _ := r.run("", "orders", "--json")
+	if !strings.Contains(orders, "ORD-MOCK0001") {
+		t.Fatal(orders)
+	}
+	_, listings, _ := r.run("", "listings", "--json")
+	if !strings.Contains(listings, "LST-MOCK0001") {
+		t.Fatal(listings)
+	}
+}
+
+func TestLogoutRevokesThenDeletes(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	code, out, e := r.run("", "logout")
+	if code != 0 || strings.Contains(out, "Prototype") || !strings.Contains(out, "revoked") {
+		t.Fatalf("logout: %d %q %q", code, out, e)
+	}
+	if r.mock.Seen.Revokes != 1 {
+		t.Fatalf("revokes=%d", r.mock.Seen.Revokes)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "tokens", "default")); err == nil {
+		t.Fatal("token file remains")
+	}
+	if code, _, _ := r.run("", "orders"); code != ExitAuth {
+		t.Fatalf("still signed in: %d", code)
+	}
+}
+
+func TestLogout401StillDeletes(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	r.mock.RevokeUnauthorized = true
+	code, out, e := r.run("", "logout")
+	if code != 0 || !strings.Contains(out, "already revoked") {
+		t.Fatalf("logout: %d %q %q", code, out, e)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "tokens", "default")); err == nil {
+		t.Fatal("token file remains after 401")
+	}
+}
+
+func TestLogoutEnvTokenDoesNotDeleteStored(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	r.env["PEWTER_TOKEN"] = mock.DeviceToken
+	code, out, e := r.run("", "logout")
+	if code != 0 || !strings.Contains(out, "Unset PEWTER_TOKEN") || !strings.Contains(out, "left in place") {
+		t.Fatalf("logout: %d %q %q", code, out, e)
+	}
+	b, err := os.ReadFile(filepath.Join(r.dir, "tokens", "default"))
+	if err != nil || strings.TrimSpace(string(b)) != mock.AgentToken {
+		t.Fatalf("stored token changed: %v %q", err, b)
+	}
+	delete(r.env, "PEWTER_TOKEN")
+	if code, _, _ := r.run("", "whoami"); code != 0 {
+		t.Fatal("stored token should still work")
+	}
+}
+
+func TestReloginRevokesStoredFirst(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	r.mock.Seen.Requests = nil
+	r.mock.Seen.Revokes = 0
+	if code, _, e := r.run("", "login"); code != 0 {
+		t.Fatalf("relogin: %d %q", code, e)
+	}
+	if r.mock.Seen.Revokes != 1 || len(r.mock.Seen.Requests) == 0 || r.mock.Seen.Requests[0] != "POST /auth/credentials/self/revoke" {
+		t.Fatalf("requests: %v revokes=%d", r.mock.Seen.Requests, r.mock.Seen.Revokes)
+	}
+	b, _ := os.ReadFile(filepath.Join(r.dir, "tokens", "default"))
+	if strings.TrimSpace(string(b)) != mock.DeviceToken {
+		t.Fatalf("new token not stored: %q", b)
+	}
+}
+
+func TestExpiredStoredTokenIsNotSent(t *testing.T) {
+	r := newRig(t)
+	r.signIn()
+	cfgPath := filepath.Join(r.dir, "config.json")
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(b, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg["expires_at"] = "2000-01-01T00:00:00Z"
+	out, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, out, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.mock.Seen.Requests = nil
+	code, _, e := r.run("", "orders")
+	if code != ExitAuth || !strings.Contains(e, "expired") {
+		t.Fatalf("expired: %d %q", code, e)
+	}
+	if len(r.mock.Seen.Requests) != 0 {
+		t.Fatalf("expired token was sent: %v", r.mock.Seen.Requests)
+	}
+}
+
+func TestDeviceTokenRejectsNonPCK(t *testing.T) {
+	const leaked = "omk_notaccepted0000000000"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/auth/device/code":
+			w.Write([]byte(`{"data":{"device_code":"d","user_code":"ABCD-1234","verification_uri":"` + "http://" + r.Host + `/device","expires_in":60,"interval":1}}`))
+		case "/api/v1/auth/device/token":
+			w.Write([]byte(`{"data":{"access_token":"` + leaked + `","token_type":"Bearer","expires_in":100}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	r := newRig(t)
+	r.env["PEWTER_API_URL"] = srv.URL + "/api/v1"
+	code, out, e := r.run("", "login")
+	if code == 0 || strings.Contains(out+e, leaked) {
+		t.Fatalf("code=%d out=%q err=%q", code, out, e)
+	}
+	if _, err := os.Stat(filepath.Join(r.dir, "tokens", "default")); err == nil {
+		t.Fatal("non-pck token stored")
+	}
+}
+
+func TestStatusPrintsHost(t *testing.T) {
+	r := newRig(t)
+	code, out, e := r.run("", "status")
+	if code != 0 || !strings.Contains(out, "127.0.0.1") || !strings.Contains(out, "ok") {
+		t.Fatalf("status: %d %q %q", code, out, e)
 	}
 }
