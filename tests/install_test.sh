@@ -77,7 +77,8 @@ mut() { # name expected-message mutate-cmd...
 }
 A="pewter-v$V-$HOSTOS-$HA.tar.gz"
 mut tampered-archive "checksum mismatch" sh -c "printf x >> $A"
-mut tampered-sums "signature check failed" sh -c "sed -i '1s/^0/1/;1t;1s/^./0/' SHA256SUMS"
+# Flip the first checksum digit. python rather than sed -i: macOS sed treats -i differently from GNU sed.
+mut tampered-sums "signature check failed" python3 -c 'from pathlib import Path; p=Path("SHA256SUMS"); t=p.read_text(); p.write_text(("1" if t[:1]=="0" else "0")+t[1:])'
 mut missing-sig "SHA256SUMS.sig" rm -f SHA256SUMS.sig
 mut wrong-key "signature check failed" sh -c "openssl pkeyutl -sign -rawin -inkey $W/other.key -in SHA256SUMS -out SHA256SUMS.sig"
 mut archive-unlisted "not listed exactly once" sh -c "echo '0000 other.tar.gz' > SHA256SUMS && openssl pkeyutl -sign -rawin -inkey $W/test.key -in SHA256SUMS -out SHA256SUMS.sig"
@@ -124,6 +125,17 @@ done
 
 # the installer must not touch shell profiles
 if [ ! -e "$W/.zshrc" ] && ! grep -q "zshrc\|bashrc\|bash_profile" "$ROOT/scripts/install.sh"; then ok "installer does not edit shell profiles"; else bad "profile edit"; fi
+
+# encrypted signing key: PEWTER_SIGNING_PASSIN is passed to openssl pkeyutl -passin
+openssl genpkey -algorithm ed25519 -aes-256-cbc -pass pass:test-pass-not-secret -out "$W/enc.key" 2>/dev/null
+openssl pkey -in "$W/enc.key" -passin pass:test-pass-not-secret -pubout -out "$W/enc.pub" 2>/dev/null
+if PEWTER_TARGETS="$HOSTOS/$HA" PEWTER_SIGNING_KEY="$W/enc.key" PEWTER_SIGNING_PASSIN="pass:test-pass-not-secret" "$ROOT/scripts/build-release.sh" 8.8.8 "$W/enc" >/dev/null 2>&1 \
+  && openssl pkeyutl -verify -rawin -pubin -inkey "$W/enc.pub" -sigfile "$W/enc/SHA256SUMS.sig" -in "$W/enc/SHA256SUMS" >/dev/null 2>&1 \
+  && openssl pkeyutl -verify -rawin -pubin -inkey "$W/enc.pub" -sigfile "$W/enc/latest.txt.sig" -in "$W/enc/latest.txt" >/dev/null 2>&1; then
+  ok "PEWTER_SIGNING_PASSIN signs an encrypted key"
+else
+  bad "PEWTER_SIGNING_PASSIN"
+fi
 
 echo; echo "install tests: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

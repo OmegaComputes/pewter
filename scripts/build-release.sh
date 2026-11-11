@@ -5,9 +5,12 @@
 #   scripts/build-release.sh <version> [outdir]
 #
 # Env:
-#   PEWTER_TARGETS      space separated os/arch list (default: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
-#   PEWTER_SIGNING_KEY  path to an Ed25519 private key (PEM). Signs SHA256SUMS and latest.txt.
-#                       The real release key must never live on a build box; use a test key here.
+#   PEWTER_TARGETS         space separated os/arch list (default: linux/amd64 linux/arm64 darwin/amd64 darwin/arm64)
+#   PEWTER_SIGNING_KEY     path to an Ed25519 private key (PEM). Signs SHA256SUMS and latest.txt.
+#                          The real release key must never live on a build box; use a test key here.
+#   PEWTER_SIGNING_PASSIN  optional openssl -passin value when the signing key is encrypted
+#                          (for example pass:env:PEWTER_KEY_PASSPHRASE). Never printed.
+#   OPENSSL                openssl binary (default: openssl). OpenSSL 3 or newer is required to sign.
 set -eu
 VERSION="${1:?usage: build-release.sh <version> [outdir]}"
 VERSION="${VERSION#v}"
@@ -23,6 +26,19 @@ rm -f "$OUT"/pewter-v"$VERSION"-*.tar.gz "$OUT/SHA256SUMS" "$OUT/SHA256SUMS.sig"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
+# Reproducible archives need GNU tar (--sort, --mtime, --owner). macOS ships bsdtar.
+TAR=""
+if tar --version 2>&1 | grep -q 'GNU tar'; then
+  TAR=tar
+elif command -v gtar >/dev/null 2>&1 && gtar --version 2>&1 | grep -q 'GNU tar'; then
+  TAR=gtar
+fi
+if [ -z "$TAR" ]; then
+  echo "pewter: need GNU tar to build reproducible archives. macOS bsdtar does not support --sort. Install gnu-tar (brew install gnu-tar) so gtar is on PATH." >&2
+  exit 1
+fi
+OPENSSL="${OPENSSL:-openssl}"
+
 for t in $TARGETS; do
   os="${t%/*}"; arch="${t#*/}"
   d="$STAGE/$os-$arch"; mkdir -p "$d"
@@ -36,7 +52,7 @@ for t in $TARGETS; do
   name="pewter-v$VERSION-$os-$arch.tar.gz"
   # Archive = LICENSE, NOTICE, pewter (exactly these three, in this order).
   # Fixed ordering, owner and mtime so the archive bytes depend only on the inputs.
-  LC_ALL=C tar -C "$d" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - LICENSE NOTICE pewter | gzip -n > "$OUT/$name"
+  LC_ALL=C "$TAR" -C "$d" --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner -cf - LICENSE NOTICE pewter | gzip -n > "$OUT/$name"
   echo "built $name"
 done
 
@@ -45,7 +61,11 @@ printf '%s\n' "$VERSION" > "$OUT/latest.txt"
 
 if [ -n "${PEWTER_SIGNING_KEY:-}" ]; then
   for f in SHA256SUMS latest.txt; do
-    openssl pkeyutl -sign -rawin -inkey "$PEWTER_SIGNING_KEY" -in "$OUT/$f" -out "$OUT/$f.sig"
+    if [ -n "${PEWTER_SIGNING_PASSIN:-}" ]; then
+      "$OPENSSL" pkeyutl -sign -rawin -passin "$PEWTER_SIGNING_PASSIN" -inkey "$PEWTER_SIGNING_KEY" -in "$OUT/$f" -out "$OUT/$f.sig"
+    else
+      "$OPENSSL" pkeyutl -sign -rawin -inkey "$PEWTER_SIGNING_KEY" -in "$OUT/$f" -out "$OUT/$f.sig"
+    fi
   done
   echo "signed SHA256SUMS and latest.txt"
 else
