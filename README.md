@@ -7,14 +7,14 @@ Everything the CLI prints is plain text for people, or JSON for scripts and agen
 
 HEIR PTE. LTD., trading as Omega Compute · [omegacompute.com](https://omegacompute.com) · devs@h3ir.com
 
-> **Status: v0.1.0: read-only, staging API, access by permissioned API key (pck_) approved in the Pewter app.**
-> The signed release is not published yet. Until then, build from source. The install commands below are the ones that release will use.
+> **Status: v0.1.0 is published: read-only, staging API, access by permissioned API key (pck_) approved in the Pewter app.**
 
 ## Install
 
-On macOS:
+On macOS (the supported install; darwin binaries in 0.1.0 are not notarized):
 
 ```sh
+brew trust --formula omegacomputes/tap/pewter   # Homebrew 7; required before the formula will load
 brew install omegacomputes/tap/pewter
 ```
 
@@ -31,7 +31,7 @@ curl -fsSLo install.sh https://omegacompute.com/install && less install.sh && sh
 ```
 
 The installer downloads a release, checks an Ed25519 signature on the checksum list and then the SHA-256 of the
-archive, and installs only if both pass. It does not edit your shell profile and does not need root
+archive, and installs only if both pass. The release public key is also at <https://omegacompute.com/cli/pewter-release.pub>. It does not edit your shell profile and does not need root
 (default directory `~/.local/bin`). It never overwrites a different program already named `pew`.
 It supports macOS and Linux on amd64 and arm64.
 

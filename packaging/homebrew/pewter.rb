@@ -14,8 +14,8 @@
 class Pewter < Formula
   desc "Orchestration for GPU compute, from the terminal (alias: pew)"
   homepage "https://omegacompute.com"
-  license "Apache-2.0"
   version "0.0.0" # REPLACE at release
+  license "Apache-2.0"
 
   base = "https://omegacompute.com/cli/pewter-v#{version}"
 
