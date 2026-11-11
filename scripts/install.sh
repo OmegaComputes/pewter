@@ -29,11 +29,11 @@ DRY_RUN=0
 VERBOSE="${PEWTER_VERBOSE:-0}"
 ALIAS="pew"
 
-# Release public key (Ed25519, PEM). PLACEHOLDER until the first signed release:
-# Heir Pte Ltd generates the signing key offline and publishes its public half
-# here. While it is a placeholder this script refuses to install anything.
+# Release public key (Ed25519, PEM). This is the public half of the release
+# signing key generated on the Mac Studio. The private half is kept outside
+# git. Tests pass a throwaway key via PEWTER_RELEASE_PUBKEY_FILE.
 RELEASE_PUBKEY='-----BEGIN PUBLIC KEY-----
-PLACEHOLDER-RELEASE-KEY-NOT-CONFIGURED
+MCowBQYDK2VwAyEAAmYZe6f/i1MIjZjFmG5kj25sS6FnUoGpOCkGw2Z88TY=
 -----END PUBLIC KEY-----'
 
 err() { printf 'pewter-install: error: %s\n' "$1" >&2; exit 1; }
