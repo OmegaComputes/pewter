@@ -61,6 +61,46 @@ brew install omegacomputes/tap/pewter
 
 Do not describe the GitHub macOS asset as Gatekeeper-clean.
 
+## npm
+
+`@omegacompute/pewter` 0.1.0 and its four platform packages are published on the npm registry under the npm user account `omegacompute` (user scope `@omegacompute`):
+
+- `@omegacompute/pewter-darwin-arm64`
+- `@omegacompute/pewter-darwin-x64`
+- `@omegacompute/pewter-linux-arm64`
+- `@omegacompute/pewter-linux-x64`
+
+Install:
+
+```sh
+npm i -g @omegacompute/pewter
+# or
+npx @omegacompute/pewter
+```
+
+The package installs two commands: `pewter` and `pew`.
+
+### Publishing a new version
+
+1. Bump the version and the matching `optionalDependencies` versions in `packaging/npm/pewter/package.json`.
+2. Build the platform packages from the release `dist/` directory (the script checks each archive against `SHA256SUMS`; verify the signature on `SHA256SUMS` separately first). Output goes to the directory passed as the third argument, conventionally `npm-out/`:
+
+   ```sh
+   node packaging/npm/scripts/build-platform-packages.js X.Y.Z dist npm-out/
+   ```
+
+3. Publish the four platform packages first, then the main package:
+
+   ```sh
+   npm publish ./npm-out/pewter-darwin-arm64 --access public
+   npm publish ./npm-out/pewter-darwin-x64 --access public
+   npm publish ./npm-out/pewter-linux-arm64 --access public
+   npm publish ./npm-out/pewter-linux-x64 --access public
+   npm publish ./packaging/npm/pewter --access public
+   ```
+
+Publishing needs npm 2FA or a granular token with 2FA bypass. npm ends direct token publishing in January 2027.
+
 ## Go-live checklist (first release)
 
 - [x] Signing key generated on the Mac Studio and kept outside git, passphrase stored separately
@@ -77,7 +117,7 @@ Do not describe the GitHub macOS asset as Gatekeeper-clean.
 - [ ] Homebrew: the tap `OmegaComputes/homebrew-tap` already exists. Generate `Formula/pewter.rb` with
       `packaging/homebrew/update-formula.sh X.Y.Z dist/SHA256SUMS --i-verified-the-signature` (the file in this repo stays a template), run
       `brew audit --strict --new --online omegacomputes/tap/pewter` and `brew install omegacomputes/tap/pewter` on a Mac, then push the formula to that tap
-- [ ] npm is not part of v0.1.0
+- [x] `@omegacompute/pewter` 0.1.0 and its four platform packages published under the npm user `omegacompute` (user scope `@omegacompute`)
 - [ ] README status banner updated once the install commands are live
 - [ ] Run `gitleaks` over the repository one last time before the tag
 

@@ -34,7 +34,7 @@ function build(version, dist, out) {
     execFileSync("tar", ["-xzf", archive, "-C", path.join(dir, "bin"), "pewter"]);
     fs.chmodSync(path.join(dir, "bin", "pewter"), 0o755);
     fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
-      name, version, description: `pewter binary for ${nos}/${ncpu}`, private: true, license: "Apache-2.0",
+      name, version, description: `pewter binary for ${nos}/${ncpu}`, license: "Apache-2.0",
       os: [nos], cpu: [ncpu], files: ["bin/pewter"], homepage: "https://omegacompute.com",
     }, null, 2) + "\n");
     made.push(name);

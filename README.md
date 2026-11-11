@@ -37,7 +37,13 @@ It supports macOS and Linux on amd64 and arm64.
 
 Options: `--version X.Y.Z`, `--dir DIR`, `--dry-run` (verify only), `--verbose`.
 
-npm is not part of v0.1.0. The names `pewter` and `pew` on the npm registry belong to other people. A later release may publish the scoped package `@omegacompute/pewter`. The scaffold under `packaging/npm/` stays private.
+With Node 18 or newer, from npm (package `@omegacompute/pewter`, bins `pewter` and `pew`):
+
+```sh
+npm i -g @omegacompute/pewter
+# or
+npx @omegacompute/pewter
+```
 
 ### Build from source
 
@@ -148,7 +154,7 @@ node --test packaging/npm/test/     # npm launcher tests (Node 18+)
 
 Layout: `cmd/pewter` (the CLI), `cmd/pewter-mock` (a loopback-only fake API for local trials and tests),
 `internal/` (client, keystore, config, rendering), `scripts/` (installer, release build),
-`packaging/` (Homebrew formula template, npm package scaffold).
+`packaging/` (Homebrew formula template, npm packages).
 
 Try it against the local mock, without an account:
 

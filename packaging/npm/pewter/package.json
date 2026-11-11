@@ -1,8 +1,7 @@
 {
   "name": "@omegacompute/pewter",
-  "version": "0.0.0-placeholder",
+  "version": "0.1.0",
   "description": "Pewter CLI: orchestration for GPU compute, from the terminal. Installs the commands `pewter` and `pew`.",
-  "private": true,
   "license": "Apache-2.0",
   "homepage": "https://omegacompute.com",
   "bugs": { "email": "devs@h3ir.com" },
@@ -13,9 +12,9 @@
   "files": ["bin/pewter.js", "README.md", "LICENSE"],
   "engines": { "node": ">=18" },
   "optionalDependencies": {
-    "@omegacompute/pewter-darwin-arm64": "0.0.0-placeholder",
-    "@omegacompute/pewter-darwin-x64": "0.0.0-placeholder",
-    "@omegacompute/pewter-linux-arm64": "0.0.0-placeholder",
-    "@omegacompute/pewter-linux-x64": "0.0.0-placeholder"
+    "@omegacompute/pewter-darwin-arm64": "0.1.0",
+    "@omegacompute/pewter-darwin-x64": "0.1.0",
+    "@omegacompute/pewter-linux-arm64": "0.1.0",
+    "@omegacompute/pewter-linux-x64": "0.1.0"
   }
 }
